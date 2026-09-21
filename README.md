@@ -1,65 +1,93 @@
 # SmokeCast — Frontend
 
-Aplicación React + Tailwind CSS 4 + Vite. Panel responsive en español con mapa Leaflet, búsqueda, filtros por país e intensidad, lista y detalle de incendios, ciudades, historial meteorológico, riesgo y analítica. Incluye exportación CSV de los incendios filtrados, estados vacíos, errores recuperables y navegación por teclado.
+React, Vite, Tailwind CSS y Leaflet. Panel en español con mapa, catálogo de
+incendios, ciudades, clima, vista preliminar de riesgo y estado de analítica.
 
-## Ejecutar
+## Ejecución local
 
-Requiere Node.js 20.19+ o 22.12+.
+Node.js 22.12 o superior. Desde `frontend-web/`:
 
 ```sh
-cd cloud-proyecto-1/frontend
 npm ci
+# Si todavía no existe .env:
+cp env.example .env
 npm run dev
 ```
 
-Abrir la URL que muestre Vite (normalmente http://localhost:5173).
+Abrir la URL indicada por Vite, normalmente http://localhost:5173.
+`npm run build` compila, `npm run preview` permite revisar la compilación y
+`npm test` verifica los contratos y la validación.
 
-```sh
-npm run build
-npm run preview
-npm test
-```
+## Variables de entorno
 
-## Datos y conexión a los microservicios
+`.env` contiene la configuración local y está excluido de Git. `env.example`
+es la plantilla versionable. Reiniciar Vite después de cambiar variables.
+Una `.env.local` existente tiene prioridad sobre `.env`; revisarla si los cambios
+no se reflejan en la aplicación.
 
-Sin configuración, los cinco servicios usan datos ficticios deterministas de `src/data.js`, correspondientes al 12 de septiembre de 2026. No se necesitan bases de datos para explorar el frontend.
+| Variable | Uso | Valor local |
+|---|---|---|
+| `VITE_DEMO_MODE` | `false` usa APIs; `true` activa datos ficticios explícitamente | `false` |
+| `VITE_MS1_URL` | Catálogo de incendios | `http://127.0.0.1:8081` |
+| `VITE_MS2_URL` | Ciudades | `http://127.0.0.1:8082` |
+| `VITE_MS3_URL` | Meteorología | `http://127.0.0.1:8083` |
+| `VITE_MS4_URL` | Vista preliminar de riesgo | `http://127.0.0.1:8084` |
+| `VITE_MS5_URL` | Estado de analítica | `http://127.0.0.1:8085` |
 
-Copiar `.env.example` a `.env.local` y configurar únicamente los servicios disponibles:
+En modo real se exigen las cinco URLs. Se validan al iniciar Vite y al compilar:
+deben usar HTTP/HTTPS, sin `/api`, rutas, parámetros ni credenciales.
+Las variables `VITE_*` son públicas; las contraseñas de las bases solo van en los
+`.env` de los microservicios. Para un navegador en otro equipo, usar direcciones
+accesibles desde ese equipo y configurar el `HOST` de las APIs.
 
-```dotenv
-VITE_MS1_URL=http://localhost:8081
-VITE_MS2_URL=http://localhost:8082
-VITE_MS3_URL=http://localhost:8083
-VITE_MS4_URL=http://localhost:8084
-VITE_MS5_URL=http://localhost:8085
-```
+En demo no se consulta ninguna API. En modo real, un error nunca se reemplaza
+por datos ficticios. Se muestran los errores de conexión, HTTP, formato y timeout
+(10 segundos), con opción de reintentar.
 
-Las URLs son bases, sin `/api` final. Reiniciar Vite después de cambiarlas. Cada servicio sin URL sigue en demo. Un servicio configurado se consulta realmente: los errores HTTP, de red o de formato se muestran, sin sustituir silenciosamente datos reales por ficticios. El timeout es de 10 segundos. Las etiquetas API indican origen/configuración, no una comprobación global de disponibilidad.
+## Contratos utilizados
 
-Las APIs deben permitir CORS desde el origen del frontend. Ms3 ya incluye CORS; Ms2 y Ms4 necesitarán habilitarlo en su backend o exponerse mediante un gateway con CORS. En Amplify, usar endpoints HTTPS accesibles públicamente; localhost apunta al equipo del visitante. Las variables `VITE_*` son públicas: nunca colocar credenciales AWS en ellas.
+| Servicio | Endpoints utilizados |
+|---|---|
+| MS1 | `/api/v1/fires?page=0&size=100`, `/api/v1/fires/{id}` |
+| MS2 | `/api/cities?limit=100`, `/api/cities/{id}` |
+| MS3 | `/api/weather`, `/api/weather/city/{id}` |
+| MS4 | `/api/risk/preview` |
+| MS5 | `/api/analytics/status` |
 
-## Endpoints y estado real del repositorio
+El catálogo de incendios usa `content`, `totalPages` y `totalElements` de Spring.
+Los botones Anterior/Siguiente recorren páginas de 100 registros. Búsqueda, filtros,
+métricas y exportación actúan sobre la página cargada. El país de una ciudad se
+obtiene de `country` (API) o `country_code` (datos demo).
 
-| Servicio | Operación principal | Segunda operación | Estado |
-| --- | --- | --- | --- |
-| Ms1 | `GET /api/fires` | `GET /api/fires/{id}` | Contrato de la guía PDF; backend ausente |
-| Ms2 | `GET /api/cities` | `GET /api/cities/{id}` | Implementados; abrir una tarjeta de ciudad |
-| Ms3 | `GET /api/weather` | `GET /api/weather/city/{id}` | Implementados; abrir una tarjeta de clima |
-| Ms4 | `GET /api/risk/preview` | `GET /api/risk/city/{id}` | Preview implementado; detalle es contrato propuesto |
-| Ms5 | `GET /api/analytics/status` | `GET /api/analytics/summary` | Status implementado; summary es contrato propuesto |
+MS4 muestra ciudades cercanas o explica que no hay incendios/ciudades. No solicita
+un detalle de riesgo inexistente ni presenta la vista preliminar como pronóstico.
+MS5 muestra que las consultas analíticas están pendientes; no solicita `/summary`.
+Los gráficos analíticos y detalles simulados de riesgo solo aparecen en demo.
 
-Ms4 real devuelve `fire`, `nearby_cities` y `note`; la interfaz muestra sus ciudades cercanas sin inventar predicciones. En demo ofrece tarjetas con llegada simulada y detalle. Para activar ese flujo con datos reales, `/api/risk/preview` debe devolver `{alerts: [{id, city, level, eta_hours, population}], note}` y `/api/risk/city/{id}` el detalle de la evaluación. Ms5 `/api/analytics/summary` debe devolver `[{country: "Perú", detections: 62}]`. Los dos contratos pendientes están centralizados en `src/api.js` para adaptarlos cuando se implementen.
+## Validaciones de la interfaz
 
-La integración del frontend cubre las dos operaciones de cada servicio con las limitaciones indicadas. Para cumplir la rúbrica con evidencia real, el equipo todavía debe implementar los contratos pendientes, levantar las APIs y desplegar la aplicación; una demo no reemplaza ese requisito.
+Actualmente no existen formularios de creación o edición. Los únicos campos son
+la búsqueda opcional (máximo 100 caracteres) y los selectores de país/intensidad.
+No se obliga a rellenar una búsqueda para consultar datos.
+
+Antes de consultar detalles se validan los IDs. Antes de mostrar datos se validan
+listas, objetos, coordenadas, cantidades y distancias. Una coordenada inválida no
+llega al mapa; las fechas inválidas y valores opcionales ausentes se muestran con
+un guion. Los errores tienen mensajes visibles y opción de reintento.
+La exportación queda deshabilitada mientras carga, si la consulta falla o no hay
+resultados filtrados. Las celdas CSV protegen prefijos interpretables como fórmulas.
 
 ## Interpretación del mapa
 
-El mapa incluye cartografía local simplificada de Natural Earth (dominio público), descargada de https://github.com/nvkelso/natural-earth-vector/blob/master/geojson/ne_110m_admin_0_countries.geojson. El mapa funciona sin servicios de teselas, claves API ni conexión externa; la atribución aparece en el mapa. La cartografía tiene resolución regional, apropiada para ubicar los eventos a escala continental. Los puntos son coordenadas del catálogo; filtros y selección funcionan sobre los datos locales o de API.
+La cartografía local de Natural Earth permite visualizar el mapa sin claves ni
+servicios externos. Las categorías de FRP son indicadores visuales, no niveles de
+riesgo sanitario. El área ilustrativa no representa una predicción física del humo.
 
-Los niveles visuales del catálogo se derivan de FRP: crítico >150 MW, alto >90 MW, moderado >30 MW y bajo el resto. Son categorías de interfaz, no umbrales científicos validados ni predicciones de exposición. El área ilustrativa no es una pluma de humo física. Los pronósticos demo no deben usarse para decisiones de emergencia.
+## Verificación realizada
 
-## AWS Amplify
-
-Se incluye `amplify.yml` en la raíz de `cloud-proyecto-1` para un repositorio cuyo directorio raíz es esa carpeta. Seleccionar `frontend` como aplicación monorepo y establecer `AMPLIFY_MONOREPO_APP_ROOT=frontend`. Si el repositorio incluye también la carpeta superior y los PDFs, usar `cloud-proyecto-1/frontend` como appRoot y ajustar el archivo de build en Amplify al mismo valor.
-
-El build ejecuta `npm ci` y `npm run build`; el artefacto es `dist`. Definir las URLs HTTPS `VITE_MS*_URL` en las variables de entorno de Amplify antes de compilar. La navegación interna usa estado de React y no requiere reglas adicionales de rutas. Este trabajo no realiza despliegues ni crea recursos AWS.
+Compilación de producción y 11 pruebas de contratos/configuración aprobadas.
+Se verificaron en navegador de escritorio y móvil la navegación, los detalles,
+la paginación, filtros, datos vacíos, errores y reintentos usando respuestas de
+API controladas. La configuración incompleta también se probó: el build informa
+la variable faltante. Esta prueba de interfaz no reemplaza la ejecución de las
+bases reales con tus credenciales.

@@ -1,1 +1,27 @@
-{"name":"smokecast-frontend","private":true,"version":"1.0.0","type":"module","scripts":{"dev":"vite --host 0.0.0.0","build":"vite build","preview":"vite preview --host 0.0.0.0","test":"node --test src/api.test.js"},"dependencies":{"react":"^19.1.0","react-dom":"^19.1.0","lucide-react":"^0.468.0","leaflet":"^1.9.4"},"devDependencies":{"vite":"^7.1.0","@vitejs/plugin-react":"^5.0.0","tailwindcss":"^4.1.0","@tailwindcss/vite":"^4.1.0"}}
+{
+  "name": "smokecast-frontend",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0",
+    "build": "vite build",
+    "preview": "vite preview --host 0.0.0.0",
+    "test": "node --test src/api.test.js"
+  },
+  "dependencies": {
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "lucide-react": "^0.468.0",
+    "leaflet": "^1.9.4"
+  },
+  "devDependencies": {
+    "vite": "^7.1.0",
+    "@vitejs/plugin-react": "^5.0.0",
+    "tailwindcss": "^4.1.0",
+    "@tailwindcss/vite": "^4.1.0"
+  },
+  "engines": {
+    "node": ">=22.12.0"
+  }
+}
