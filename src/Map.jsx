@@ -17,7 +17,7 @@ export default function FireMap({fires,onSelect,layer}) {
  },[]);
  useEffect(()=>{if(!markers.current)return;markers.current.clearLayers();fires.forEach(f=>{
  if(!Number.isFinite(f.centroid_lat)||!Number.isFinite(f.centroid_lon))return;
- if(layer==='humo')L.circle([f.centroid_lat+.3,f.centroid_lon+.5],{radius:f.max_frp*800,color:colors[f.level],weight:0,fillOpacity:.13}).addTo(markers.current);
+ if(layer==='humo')L.circle([f.centroid_lat,f.centroid_lon],{radius:f.max_frp*800,color:colors[f.level],weight:0,fillOpacity:.13}).addTo(markers.current);
  const icon=L.divIcon({className:'fire-marker-wrap',html:`<span class="fire-marker" style="--marker:${colors[f.level] || '#ea873f'}"><span></span></span>`,iconSize:[28,28],iconAnchor:[14,14]});
  const marker=L.marker([f.centroid_lat,f.centroid_lon],{icon}).addTo(markers.current).on('click',()=>select.current(f));
  const label=document.createElement('span');label.textContent=f.name;marker.bindTooltip(label);marker.on('add',()=>{const el=marker.getElement();el?.setAttribute('aria-label',`Ver incendio: ${f.name}`);el?.setAttribute('role','button');});

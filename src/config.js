@@ -13,11 +13,13 @@ export function readConfig(env) {
     try { url = new URL(value); } catch {
       throw new Error(`${key}: completa una URL base válida en .env (por ejemplo http://127.0.0.1:${8080 + service}).`);
     }
+    const basePath = url.pathname.replace(/\/+$/, '');
     if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password ||
-        url.search || url.hash || url.pathname !== '/') {
-      throw new Error(`${key}: usa una URL http/https sin /api, rutas, parámetros ni credenciales.`);
+        url.search || url.hash || basePath.includes('//') ||
+        (basePath && !/^\/ms[1-5]$/.test(basePath))) {
+      throw new Error(`${key}: usa una URL http/https sin parámetros ni credenciales y con una ruta base /ms1 a /ms5.`);
     }
-    bases[service] = url.origin;
+    bases[service] = `${url.origin}${basePath}`;
   }
   return { demo, bases };
 }

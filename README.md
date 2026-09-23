@@ -51,7 +51,7 @@ por datos ficticios. Se muestran los errores de conexión, HTTP, formato y timeo
 | MS1 | `/api/v1/fires?page=0&size=100`, `/api/v1/fires/{id}` |
 | MS2 | `/api/cities?limit=100`, `/api/cities/{id}` |
 | MS3 | `/api/weather`, `/api/weather/city/{id}` |
-| MS4 | `/api/risk/preview` |
+| MS4 | `/api/risk/preview`, `/api/risk/{city_id}` |
 | MS5 | `/api/analytics/status` |
 
 El catálogo de incendios usa `content`, `totalPages` y `totalElements` de Spring.
@@ -59,10 +59,12 @@ Los botones Anterior/Siguiente recorren páginas de 100 registros. Búsqueda, fi
 métricas y exportación actúan sobre la página cargada. El país de una ciudad se
 obtiene de `country` (API) o `country_code` (datos demo).
 
-MS4 muestra ciudades cercanas o explica que no hay incendios/ciudades. No solicita
-un detalle de riesgo inexistente ni presenta la vista preliminar como pronóstico.
+MS4 muestra ciudades cercanas, niveles de riesgo heurísticos y tiempos estimados de
+llegada. La interfaz presenta el resultado como evaluación preliminar, no como alerta
+oficial ni pronóstico físico de dispersión.
 MS5 muestra que las consultas analíticas están pendientes; no solicita `/summary`.
-Los gráficos analíticos y detalles simulados de riesgo solo aparecen en demo.
+Los gráficos analíticos siguen siendo demostrativos; el detalle de riesgo se consulta
+en MS4 cuando se usa el modo real.
 
 ## Validaciones de la interfaz
 
@@ -91,3 +93,15 @@ la paginación, filtros, datos vacíos, errores y reintentos usando respuestas d
 API controladas. La configuración incompleta también se probó: el build informa
 la variable faltante. Esta prueba de interfaz no reemplaza la ejecución de las
 bases reales con tus credenciales.
+
+Los filtros de incendios (país, intensidad y búsqueda por ID/país) consultan MS1
+sobre el catálogo completo y reinician la página al cambiar. Requieren la versión
+de MS1 que admite `country`, `severity`, `q` y `/api/v1/fires/countries`.
+Durante la carga se conservan las filas para evitar el colapso de la tabla;
+la barra inferior de paginación permanece visible al recorrerla.
+
+Atmósfera usa `/api/weather/overview` de MS3: una tarjeta por localidad, filtro por
+país y páginas de 48 localidades. Riesgo de humo consulta su propio catálogo
+paginado de MS1, con país e intensidad independientes de Incendios. Cambiar esos
+filtros limpia la selección; cambiar de página conserva el incendio evaluado.
+El botón del mapa continúa abriendo la evaluación del incendio seleccionado.

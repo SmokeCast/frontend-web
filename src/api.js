@@ -47,6 +47,10 @@ export function normalizeCity(value) {
     population: c.population == null ? null : number(c.population, 'población', 0, Number.MAX_SAFE_INTEGER, true),
     ...(c.distance_km !== undefined ? { distance_km: number(c.distance_km, 'distancia', 0) } : {}) };
 }
+export function normalizeSensitiveSite(value) {
+  const s = record(value);
+  return { ...s, id: id(s.id), city_id: id(s.city_id ?? s.cityId), name: text(s.name, 'Sitio sensible'), type: text(s.type, 'Otro') };
+}
 function normalizeWeather(value) {
   const w = record(value);
   return { ...w, city_id: id(w.city_id), city_name: text(w.city_name, `Ciudad ${w.city_id}`),
@@ -57,11 +61,11 @@ function normalizeWeather(value) {
 
 export function createApi(env, fetcher = (...args) => fetch(...args)) {
   const { bases, demo } = readConfig(env);
-  async function request(service, path, fixture) {
+  async function request(service, path, fixture, options = {}) {
     if (demo) return { data: structuredClone(fixture), source: 'demo' };
     let response;
     try {
-      response = await fetcher(`${bases[service]}${path}`, { signal: AbortSignal.timeout(10000) });
+      response = await fetcher(`${bases[service]}${path}`, { signal: AbortSignal.timeout(10000), ...options });
     } catch (error) {
       if (['TimeoutError', 'AbortError'].includes(error.name)) throw new Error(`MS${service} tardó demasiado en responder. Intenta de nuevo.`);
       throw new Error(`No se pudo conectar con MS${service}. Comprueba que el servicio esté encendido.`);
@@ -75,16 +79,29 @@ export function createApi(env, fetcher = (...args) => fetch(...args)) {
     catch { throw new Error(`MS${service} devolvió una respuesta que no es JSON válido.`); }
   }
   return {
-    async fires(page = 0) {
+    async fires(page = 0, {country = '', severity = '', q = ''} = {}) {
       number(page, 'página', 0, Number.MAX_SAFE_INTEGER, true);
-      const r = await request(1, `/api/v1/fires?page=${page}&size=100`, {
-        content: fires.slice(page * 100, (page + 1) * 100), totalPages: Math.ceil(fires.length / 100), totalElements: fires.length,
+      const params = new URLSearchParams();
+      if (country) params.set('country', country);
+      if (severity) params.set('severity', severity);
+      if (q.trim()) params.set('q', q.trim());
+      const suffix = params.size ? `&${params}` : '';
+      const term = q.trim().toLowerCase();
+      const numeric = term.replace(/^incendio\s*#?\s*/, '').replace(/^#/, '');
+      const filtered = fires.map(normalizeFire).filter(f => (!country || f.country.toLowerCase() === country.toLowerCase()) &&
+        (!severity || f.level === severity) && (!term || f.country.toLowerCase().includes(term) || String(f.id) === numeric));
+      const r = await request(1, `/api/v1/fires?page=${page}&size=100${suffix}`, {
+        content: filtered.slice(page * 100, (page + 1) * 100), totalPages: Math.ceil(filtered.length / 100), totalElements: filtered.length,
       });
       const data = record(r.data);
       return { ...r, data: list(data.content).map(normalizeFire), pagination: {
         page, totalPages: number(data.totalPages, 'páginas', 0, Number.MAX_SAFE_INTEGER, true),
         totalElements: number(data.totalElements, 'total de eventos', 0, Number.MAX_SAFE_INTEGER, true),
       } };
+    },
+    async fireCountries() {
+      const r = await request(1, '/api/v1/fires/countries', [...new Set(fires.map(f => normalizeFire(f).country))].sort());
+      return { ...r, data: list(r.data).map(c => text(c, 'Sin país')) };
     },
     async fire(value) {
       const key = id(value);
@@ -93,47 +110,106 @@ export function createApi(env, fetcher = (...args) => fetch(...args)) {
       return { ...r, data: normalizeFire(r.data) };
     },
     async cities() {
-      const r = await request(2, '/api/cities?limit=100', cities);
-      return { ...r, data: list(r.data).map(normalizeCity) };
+      const data = [];
+      const seen = new Set();
+      const limit = 500;
+      for (let offset = 0; ; offset += limit) {
+        const r = await request(2, `/api/v1/cities?page=${offset / limit}&size=${limit}`, cities.slice(offset, offset + limit));
+        const batch = list(r.data).map(normalizeCity);
+        for (const city of batch) {
+          if (seen.has(city.id)) throw new Error('El catálogo de ciudades cambió durante la carga. Actualiza para volver a consultar.');
+          seen.add(city.id);
+          data.push(city);
+        }
+        if (batch.length < limit) return { ...r, data: data.sort((a, b) => a.name.localeCompare(b.name, 'es') || a.id - b.id) };
+      }
     },
     async city(value) {
       const key = id(value);
-      const r = await request(2, `/api/cities/${key}`, cities.find(c => c.id === key));
+      const r = await request(2, `/api/v1/cities/${key}`, cities.find(c => c.id === key));
       if (!r.data) throw new Error('Ciudad no encontrada.');
       return { ...r, data: normalizeCity(r.data) };
     },
+    async sensitiveSites(cityId) {
+      const key = id(cityId);
+      const r = await request(2, `/api/v1/cities/${key}/sensitive-sites`, []);
+      return { ...r, data: list(r.data).map(normalizeSensitiveSite) };
+    },
+    async weatherOverview(page = 0, country = '', city = '') {
+      number(page, 'página', 0, Number.MAX_SAFE_INTEGER, true);
+      const latest = new Map();
+      for (const w of weather) {
+        if (!latest.has(w.city_id) || w.timestamp > latest.get(w.city_id).timestamp) latest.set(w.city_id, w);
+      }
+      const all = [...latest.values()].map(w => ({...w, city_country: w.city_country || cities.find(c=>c.id===w.city_id)?.country || 'Sin país'}));
+      const normalizedCity = city.trim().toLocaleLowerCase();
+      const filtered = all.filter(w=>!country || w.city_country===country).filter(w=>!normalizedCity || w.city_name.toLocaleLowerCase().includes(normalizedCity)).sort((a,b)=>a.city_name.localeCompare(b.city_name));
+      const r = await request(3, `/api/v1/weather/overview?page=${page}&size=48&country=${encodeURIComponent(country)}&city=${encodeURIComponent(city)}`, {
+        data: filtered.slice(page*48,(page+1)*48), total: filtered.length, countries:[...new Set(all.map(w=>w.city_country))].sort(),
+      });
+      const body = record(r.data);
+      const total = number(body.total, 'total de localidades', 0, Number.MAX_SAFE_INTEGER, true);
+      return {...r, data:list(body.data).map(normalizeWeather), countries:list(body.countries),
+        pagination:{totalElements:total,totalPages:Math.ceil(total/48)}};
+    },
     async weather() {
-      const r = await request(3, '/api/weather', { data: weather });
+      const r = await request(3, '/api/v1/weather', { data: weather });
       return { ...r, data: list(record(r.data).data).map(normalizeWeather) };
     },
     async cityWeather(value) {
       const key = id(value);
-      const r = await request(3, `/api/weather/city/${key}`, { readings: weather.filter(w => w.city_id === key) });
+      const r = await request(3, `/api/v1/weather/city/${key}`, { readings: weather.filter(w => w.city_id === key) });
       return { ...r, data: { ...record(r.data), readings: list(r.data.readings).map(normalizeWeather) } };
     },
-    async risk() {
-      const r = await request(4, '/api/risk/preview', { alerts: risks, note: 'Escenario de exposición simulado.' });
+    async risk(fireId) {
+      const path = fireId ? `/api/v1/risk/preview?fire_id=${encodeURIComponent(id(fireId))}` : '/api/v1/risk/preview';
+      const r = await request(4, path, { alerts: risks, note: 'Escenario de exposición simulado.' });
       if (demo) return r;
       const data = record(r.data);
       return { ...r, data: { ...data, fire: data.fire === null ? null : normalizeFire(data.fire),
         note: text(data.note, 'Vista preliminar; el cálculo de riesgo está pendiente.'),
         nearby_cities: list(data.nearby_cities).map(normalizeCity) } };
     },
-    async riskDetail(value) {
+    async riskDetail(value, fireId) {
       const key = id(value);
-      if (!demo) throw new Error('La evaluación detallada de riesgo todavía no está disponible.');
+      if (!demo) {
+        const suffix = fireId ? `?fire_id=${encodeURIComponent(id(fireId))}` : '';
+        const r = await request(4, `/api/v1/risk/${key}${suffix}`);
+        return { ...r, data: record(r.data) };
+      }
       const data = risks.find(r => r.id === key);
       if (!data) throw new Error('Evaluación no encontrada.');
       return { data: structuredClone(data), source: 'demo' };
     },
     async analytics() {
-      const r = await request(5, '/api/analytics/status', {
+      const r = await request(5, '/api/v1/analytics/status', {
         status: 'demo', note: 'Distribución simulada de detecciones.', athena_enabled: false,
       });
       const data = record(r.data);
       return { ...r, data: { ...data, status: text(data.status, 'pending'),
         note: text(data.note, 'Consultas analíticas pendientes de implementación.'),
         summary: demo ? structuredClone(analytics) : null } };
+    },
+    async analyticsReports() {
+      const r = await request(5, '/api/v1/analytics/reports', { reports: [], views: [] });
+      const data = record(r.data);
+      return { ...r, data: { reports: list(data.reports), views: list(data.views) } };
+    },
+    async analyticsQuery(report, country = '') {
+      if (typeof report !== 'string' || !report) throw new Error('Reporte analítico inválido.');
+      return request(5, '/api/v1/analytics/queries', {}, {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({report, ...(country ? {country} : {})}),
+      });
+    },
+    async analyticsQueryStatus(queryId) {
+      if (!/^[A-Za-z0-9_-]{1,128}$/.test(String(queryId))) throw new Error('ID de consulta analítica inválido.');
+      return request(5, `/api/v1/analytics/queries/${queryId}`, {});
+    },
+    async analyticsResults(queryId, nextToken = '') {
+      if (!/^[A-Za-z0-9_-]{1,128}$/.test(String(queryId))) throw new Error('ID de consulta analítica inválido.');
+      const suffix = nextToken ? `?next_token=${encodeURIComponent(nextToken)}` : '';
+      return request(5, `/api/v1/analytics/queries/${queryId}/results${suffix}`, {});
     },
   };
 }

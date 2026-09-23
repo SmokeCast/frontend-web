@@ -63,16 +63,102 @@ test('detecta JSON y contratos inesperados', async () => {
 });
 test('analítica consulta únicamente status y no inventa resúmenes', async () => {
   const api=createApi(env,async url=>{
-    assert.equal(url,'http://127.0.0.1:8085/api/analytics/status');
+    assert.equal(url,'http://127.0.0.1:8085/api/v1/analytics/status');
     return ok({status:'pending',athena_enabled:false,note:'Pendiente'});
   });
   const r=await api.analytics();assert.equal(r.source,'api');assert.equal(r.data.summary,null);
 });
 test('riesgo maneja catálogo vacío y no consulta rutas inexistentes', async () => {
   const api=createApi(env,async url=>{
-    assert.equal(url,'http://127.0.0.1:8084/api/risk/preview');
-    return ok({fire:null,nearby_cities:[],note:'Sin incendios'});
+    assert.match(url,/http:\/\/127\.0\.0\.1:8084\/api\/v1\/risk/);
+    if (url.endsWith('/preview')) return ok({fire:null,nearby_cities:[],alerts:[],note:'Sin incendios'});
+    return ok({id:1,name:'Lima',level:'Bajo',risk_score:10});
   });
   assert.equal((await api.risk()).data.fire,null);
-  await assert.rejects(api.riskDetail(1), /todavía no está disponible/);
+  assert.equal((await api.riskDetail(1)).data.level,'Bajo');
+});
+
+test('carga las 1300 ciudades entre páginas y conserva todos los países', async () => {
+  const countries=['Guyana','Perú','Chile','Argentina','Brasil','Bolivia','Colombia','Ecuador','Paraguay','Suriname','Uruguay','Venezuela','French Guiana'];
+  const rows=Array.from({length:1300},(_,i)=>({id:i+1,name:`Ciudad ${i}`,country:countries[Math.floor(i/100)],latitude:-12,longitude:-77,population:null}));
+  const offsets=[];
+  const api=createApi(env,async url=>{
+    const params=new URL(url).searchParams;
+    const page=Number(params.get('page')),limit=Number(params.get('size'));
+    assert.equal(limit,500);offsets.push(page*limit);
+    return ok(rows.slice(page*limit,page*limit+limit));
+  });
+  const result=await api.cities();
+  assert.deepEqual(offsets,[0,500,1000]);
+  assert.equal(result.data.length,1300);
+  assert.equal(new Set(result.data.map(c=>c.country)).size,13);
+  assert.equal(new Set(result.data.map(c=>c.id)).size,1300);
+});
+
+test('ciudades no presenta un catálogo parcial si falla una página posterior', async () => {
+  const rows=Array.from({length:500},(_,i)=>({id:i+1,name:'Ciudad',latitude:0,longitude:0}));
+  let calls=0;
+  const api=createApi(env,async()=>++calls===1?ok(rows):({ok:false,status:503,json:async()=>({})}));
+  await assert.rejects(api.cities(), /HTTP 503/);
+});
+
+test('ciudades detecta páginas repetidas y maneja catálogos vacíos y demo', async () => {
+  const rows=Array.from({length:500},(_,i)=>({id:i+1,name:'Ciudad',latitude:0,longitude:0}));
+  await assert.rejects(createApi(env,async()=>ok(rows)).cities(), /catálogo.*cambió/);
+  assert.deepEqual((await createApi(env,async()=>ok([])).cities()).data,[]);
+  assert.ok((await createApi({VITE_DEMO_MODE:'true'},()=>assert.fail()).cities()).data.length);
+});
+
+test('envía filtros globales a MS1 y conserva los totales filtrados', async () => {
+  const api=createApi(env,async url=>{
+    const params=new URL(url).searchParams;
+    assert.equal(params.get('page'),'2');
+    assert.equal(params.get('country'),'Perú');
+    assert.equal(params.get('severity'),'Bajo');
+    assert.equal(params.get('q'),'Incendio #106');
+    return ok({content:[{...fire,maxFrp:20}],totalPages:4,totalElements:350});
+  });
+  const result=await api.fires(2,{country:'Perú',severity:'Bajo',q:' Incendio #106 '});
+  assert.equal(result.pagination.totalElements,350);
+  assert.equal(result.data[0].level,'Bajo');
+});
+
+test('catálogo de países independiente de los incendios de la página', async () => {
+  const result=await createApi(env,async url=>{
+    assert.equal(new URL(url).pathname,'/api/v1/fires/countries');
+    return ok(['Chile','Guyana','Perú']);
+  }).fireCountries();
+  assert.deepEqual(result.data,['Chile','Guyana','Perú']);
+});
+
+test('demo filtra antes de calcular el total y paginar', async () => {
+  const api=createApi({VITE_DEMO_MODE:'true'});
+  const all=await api.fires();
+  const country=all.data[0].country;
+  const filtered=await api.fires(0,{country});
+  assert.ok(filtered.data.every(f=>f.country===country));
+  assert.equal(filtered.pagination.totalElements,all.data.filter(f=>f.country===country).length);
+  const empty=await api.fires(0,{q:'inexistente'});
+  assert.equal(empty.pagination.totalElements,0);
+});
+
+test('atmósfera pagina localidades únicas y envía el filtro de país', async () => {
+  const api=createApi(env,async url=>{
+    const params=new URL(url).searchParams;
+    assert.equal(new URL(url).pathname,'/api/v1/weather/overview');
+    assert.equal(params.get('page'),'1');
+    assert.equal(params.get('size'),'48');
+    assert.equal(params.get('country'),'Perú');
+    assert.equal(params.get('city'),'Lima');
+    return ok({data:[{city_id:7,city_name:'Lima',city_country:'Perú'}],total:100,countries:['Guyana','Perú']});
+  });
+  const r=await api.weatherOverview(1,'Perú','Lima');
+  assert.equal(r.pagination.totalPages,3);
+  assert.equal(r.pagination.totalElements,100);
+  assert.equal(r.data[0].city_id,7);
+});
+
+test('atmósfera demo no duplica tarjetas de ciudad', async () => {
+  const r=await createApi({VITE_DEMO_MODE:'true'}).weatherOverview();
+  assert.equal(new Set(r.data.map(w=>w.city_id)).size,r.data.length);
 });
