@@ -70,13 +70,236 @@ function RiskFirePicker({selectedFireId,onFireChange}) {
 function ServicePage(props) {
  return props.page==='weather'?<WeatherPage onSelect={props.onSelect}/>:<GeneralServicePage {...props}/>;
 }
-function AnalyticsPanel({resource}) {
- const [catalog,setCatalog]=useState(null),[selected,setSelected]=useState('fire_summary'),[country,setCountry]=useState(''),[query,setQuery]=useState(null),[result,setResult]=useState(null),[busy,setBusy]=useState(false),[error,setError]=useState('');
- useEffect(()=>{if(resource.source==='api'&&resource.data?.athena_enabled) api.analyticsReports().then(r=>setCatalog(r.data)).catch(e=>setError(e.message));},[resource.source,resource.data?.athena_enabled]);
- const run=async()=>{setBusy(true);setError('');setResult(null);try{const started=await api.analyticsQuery(selected,country);let state;for(let i=0;i<30;i++){state=await api.analyticsQueryStatus(started.data.query_id);if(['SUCCEEDED','FAILED','CANCELLED'].includes(state.data.status))break;await new Promise(resolve=>setTimeout(resolve,1000));}if(state?.data?.status!=='SUCCEEDED')throw new Error(state?.data?.reason||`La consulta terminó en estado ${state?.data?.status||'desconocido'}.`);const rows=await api.analyticsResults(started.data.query_id);setQuery(started.data.query_id);setResult(rows.data);}catch(e){setError(e.message);}finally{setBusy(false);}};
- if(resource.source==='demo') return <><div className="analytics-chart">{resource.data.summary?.map(row=><div className="bar-row" key={row.country}><span>{row.country}</span><div><i style={{width:`${row.detections/Math.max(1,...resource.data.summary.map(d=>d.detections))*100}%`}}/></div><strong>{format(row.detections)}</strong></div>)}</div><p className="subtle">Resumen simulado. Activa Athena para ejecutar consultas sobre S3.</p></>;
- if(!resource.data?.athena_enabled) return <p className="notice">MS5 está disponible, pero Athena está desactivado. Configura <code>ATHENA_ENABLED=true</code> y <code>ATHENA_OUTPUT_S3</code>.</p>;
- return <div className="analytics-panel"><div className="table-toolbar"><label className="filter-select">Consulta <select value={selected} onChange={e=>setSelected(e.target.value)}>{(catalog?.reports||[]).map(item=><option key={item.id} value={item.id}>{item.title}</option>)}</select></label><label className="filter-select">País <input aria-label="País para consulta Athena" value={country} maxLength={80} onChange={e=>setCountry(e.target.value)}/></label><button className="button" onClick={run} disabled={busy||!catalog}>{busy?'Consultando…':'Ejecutar consulta'}</button></div>{error&&<p className="control-error" role="alert">{error}</p>}{query&&<p className="subtle">Consulta {query} completada.</p>}{result&&<div className="table-scroll"><table><thead><tr>{result.columns.map(column=><th key={column}>{column}</th>)}</tr></thead><tbody>{result.rows.map((row,index)=><tr key={index}>{result.columns.map(column=><td key={column}>{row[column]??'—'}</td>)}</tr>)}</tbody></table></div>}</div>;
+/* --- 1. Etiquetas legibles para las columnas que devuelve Athena ----------- */
+const COLUMN_LABELS = {
+  city_id: 'ID ciudad', name: 'Ciudad', city_name: 'Ciudad',
+  country: 'País', fire_country: 'País del incendio',
+  population: 'Población', timestamp: 'Fecha y hora',
+  temperature_c: 'Temperatura (°C)', wind_speed_kmh: 'Viento (km/h)',
+  wind_direction_deg: 'Dirección del viento (°)',
+  pm25_ug_m3: 'PM2.5 (µg/m³)', humidity_pct: 'Humedad (%)',
+  fire_events: 'Eventos de incendio', detections: 'Detecciones',
+  max_frp_mw: 'FRP máximo (MW)', avg_event_frp_mw: 'FRP promedio (MW)',
+  fire_event_id: 'ID del incendio', distance_km: 'Distancia (km)',
+  max_frp: 'FRP (MW)', last_detected_at: 'Última detección',
+  sensitive_site_id: 'ID del sitio', site_name: 'Sitio sensible',
+  type: 'Tipo de sitio',
+};
+const columnLabel = c => COLUMN_LABELS[c] || c.replace(/_/g, ' ').replace(/^./, m => m.toUpperCase());
+
+/* --- 2. Utilidades numéricas ---------------------------------------------- */
+const num = v => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
+const isNum = v => v != null && v !== '' && Number.isFinite(Number(v));
+const sumBy = (rows, key) => rows.reduce((s, r) => s + num(r[key]), 0);
+const avgBy = (rows, key) => (rows.length ? sumBy(rows, key) / rows.length : 0);
+const maxBy = (rows, key) => rows.reduce((m, r) => Math.max(m, num(r[key])), 0);
+const uniq = (rows, key) => new Set(rows.map(r => r[key])).size;
+const dec = (n, d = 1) => new Intl.NumberFormat('es-PE',
+  { minimumFractionDigits: d, maximumFractionDigits: d }).format(n || 0);
+
+/* --- 3. KPIs y gráfico que corresponden a cada reporte -------------------- */
+const REPORT_VIEWS = {
+  fire_summary: {
+    chart: { label: 'country', value: 'detections', title: 'Detecciones por país', note: 'Puntos de calor agrupados por país' },
+    kpis: r => [
+      { title: 'Países afectados', value: format(r.length), icon: MapPinned, caption: 'Con detecciones registradas', color: 'green' },
+      { title: 'Eventos de incendio', value: format(sumBy(r, 'fire_events')), icon: Flame, caption: 'Focos agrupados', color: 'orange' },
+      { title: 'Detecciones satelitales', value: format(sumBy(r, 'detections')), icon: Radio, caption: 'Puntos de calor individuales', color: 'gold' },
+      { title: 'FRP máximo', value: `${dec(maxBy(r, 'max_frp_mw'))} MW`, icon: ShieldCheck, caption: 'Potencia radiativa pico', color: 'red' },
+    ],
+  },
+  weather_by_city: {
+    chart: { label: 'name', value: 'pm25_ug_m3', title: 'Ciudades con peor calidad del aire', note: 'Concentración de PM2.5 en µg/m³' },
+    kpis: r => [
+      { title: 'Ciudades monitoreadas', value: format(r.length), icon: Building2, caption: 'Con lectura meteorológica', color: 'green' },
+      { title: 'Temperatura promedio', value: `${dec(avgBy(r, 'temperature_c'))} °C`, icon: CloudSun, caption: 'Media de la selección', color: 'gold' },
+      { title: 'Viento promedio', value: `${dec(avgBy(r, 'wind_speed_kmh'))} km/h`, icon: Wind, caption: 'Velocidad media', color: 'green' },
+      { title: 'PM2.5 promedio', value: `${dec(avgBy(r, 'pm25_ug_m3'))} µg/m³`, icon: Radio, caption: 'Calidad del aire', color: 'red' },
+    ],
+  },
+  fire_city_exposure: {
+    chart: { label: 'name', value: 'distance_km', title: 'Ciudades más próximas a un incendio', note: 'Barra más corta significa mayor cercanía al foco', asc: true },
+    kpis: r => [
+      { title: 'Ciudades expuestas', value: format(uniq(r, 'city_id')), icon: Building2, caption: 'Dentro de 150 km de un foco', color: 'orange' },
+      { title: 'Incendios implicados', value: format(uniq(r, 'fire_event_id')), icon: Flame, caption: 'Eventos con población cerca', color: 'red' },
+      { title: 'Población en riesgo', value: format(sumBy([...new Map(r.map(x => [x.city_id, x])).values()], 'population')), icon: Users, caption: 'Habitantes de las ciudades expuestas', color: 'gold' },
+      { title: 'Distancia mínima', value: `${dec(r.length ? Math.min(...r.map(x => num(x.distance_km))) : 0, 2)} km`, icon: MapPinned, caption: 'Foco más cercano a una ciudad', color: 'green' },
+    ],
+  },
+  sensitive_sites_exposure: {
+    chart: { label: 'site_name', value: 'max_frp', title: 'Sitios sensibles con mayor exposición', note: 'Potencia radiativa del incendio cercano (MW)' },
+    kpis: r => [
+      { title: 'Sitios sensibles', value: format(uniq(r, 'sensitive_site_id')), icon: ShieldCheck, caption: 'Hospitales, colegios e industria', color: 'red' },
+      { title: 'Tipos de sitio', value: format(uniq(r, 'type')), icon: Database, caption: 'Categorías distintas', color: 'gold' },
+      { title: 'Ciudades implicadas', value: format(uniq(r, 'city_id')), icon: Building2, caption: 'Con sitios en riesgo', color: 'orange' },
+      { title: 'FRP máximo', value: `${dec(maxBy(r, 'max_frp'))} MW`, icon: Flame, caption: 'Incendio más intenso próximo', color: 'green' },
+    ],
+  },
+};
+
+/* --- 4. Gráfico de barras horizontal -------------------------------------- */
+function AnalyticsChart({ rows, config }) {
+  if (!config) return null;
+  const data = rows
+    .map(r => ({ label: String(r[config.label] ?? '').trim(), value: num(r[config.value]) }))
+    .filter(d => d.label);
+  const top = [...data].sort((a, b) => (config.asc ? a.value - b.value : b.value - a.value)).slice(0, 8);
+  if (!top.length) return null;
+  const peak = Math.max(1, ...top.map(d => d.value));
+  return (
+    <div className="analytics-chart">
+      <h3>{config.title}</h3>
+      <p className="subtle">{config.note}</p>
+      {top.map((d, i) => (
+        <div className="bar-row" key={`${d.label}-${i}`}>
+          <span title={d.label}>{d.label.length > 14 ? `${d.label.slice(0, 13)}…` : d.label}</span>
+          <div><i style={{ width: `${Math.max(3, (d.value / peak) * 100)}%` }} /></div>
+          <strong>{d.value >= 1000 ? format(Math.round(d.value)) : dec(d.value, d.value >= 100 ? 0 : 1)}</strong>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/* --- 5. Panel de analítica ------------------------------------------------ */
+function AnalyticsPanel({ resource }) {
+  const [catalog, setCatalog] = useState(null);
+  const [countries, setCountries] = useState([]);
+  const [selected, setSelected] = useState('fire_summary');
+  const [country, setCountry] = useState('');
+  const [query, setQuery] = useState(null);
+  const [result, setResult] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+
+  const live = resource.source === 'api' && resource.data?.athena_enabled;
+
+  useEffect(() => {
+    if (live) api.analyticsReports().then(r => setCatalog(r.data)).catch(e => setError(e.message));
+  }, [live]);
+
+  // Desplegable de países: se alimenta de Ms1, que ya expone la lista
+  useEffect(() => {
+    if (live) api.fireCountries().then(r => setCountries(r.data)).catch(() => setCountries([]));
+  }, [live]);
+
+  const run = async () => {
+    setBusy(true); setError(''); setResult(null);
+    try {
+      const started = await api.analyticsQuery(selected, country);
+      let state;
+      for (let i = 0; i < 30; i++) {
+        state = await api.analyticsQueryStatus(started.data.query_id);
+        if (['SUCCEEDED', 'FAILED', 'CANCELLED'].includes(state.data.status)) break;
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      }
+      if (state?.data?.status !== 'SUCCEEDED') {
+        throw new Error(state?.data?.reason || `La consulta terminó en estado ${state?.data?.status || 'desconocido'}.`);
+      }
+      const rows = await api.analyticsResults(started.data.query_id);
+      setQuery(started.data.query_id);
+      setResult(rows.data);
+    } catch (e) { setError(e.message); } finally { setBusy(false); }
+  };
+
+  if (resource.source === 'demo') return (
+    <>
+      <div className="analytics-chart">
+        {resource.data.summary?.map(row => (
+          <div className="bar-row" key={row.country}>
+            <span>{row.country}</span>
+            <div><i style={{ width: `${row.detections / Math.max(1, ...resource.data.summary.map(d => d.detections)) * 100}%` }} /></div>
+            <strong>{format(row.detections)}</strong>
+          </div>
+        ))}
+      </div>
+      <p className="subtle">Resumen simulado. Activa Athena para ejecutar consultas sobre S3.</p>
+    </>
+  );
+
+  if (!resource.data?.athena_enabled) return (
+    <p className="notice">
+      MS5 está disponible, pero Athena está desactivado. Configura <code>ATHENA_ENABLED=true</code> y <code>ATHENA_OUTPUT_S3</code>.
+    </p>
+  );
+
+  const view = REPORT_VIEWS[selected];
+  const rows = result?.rows || [];
+
+  return (
+    <div className="analytics-panel">
+      <div className="table-toolbar">
+        <label className="filter-select">
+          Consulta
+          <select value={selected} onChange={e => { setSelected(e.target.value); setResult(null); setQuery(null); }}>
+            {(catalog?.reports || []).map(item => <option key={item.id} value={item.id}>{item.title}</option>)}
+          </select>
+        </label>
+
+        {/* Antes era <input> de texto libre; ahora es un desplegable real */}
+        <label className="filter-select">
+          País
+          <select aria-label="País para la consulta analítica" value={country} onChange={e => setCountry(e.target.value)}>
+            <option value="">Todos los países</option>
+            {countries.map(c => <option key={c} value={c}>{c}</option>)}
+          </select>
+        </label>
+
+        <button className="button" onClick={run} disabled={busy || !catalog}>
+          {busy ? 'Consultando…' : 'Ejecutar consulta'}
+        </button>
+      </div>
+
+      {error && <p className="control-error" role="alert">{error}</p>}
+
+      {result && rows.length > 0 && (
+        <>
+          <div className="stats-grid">
+            {view.kpis(rows).map(s => (
+              <div className="stat-card" key={s.title}>
+                <div className="stat-top">
+                  <span>{s.title}</span>
+                  <div className={`stat-icon ${s.color}`}><s.icon size={19} /></div>
+                </div>
+                <strong>{s.value}</strong>
+                <div className="stat-caption"><span className={`small-dot ${s.color}`} />{s.caption}</div>
+              </div>
+            ))}
+          </div>
+          <AnalyticsChart rows={rows} config={view.chart} />
+        </>
+      )}
+
+      {result && !rows.length && (
+        <div className="empty">La consulta no devolvió resultados para este filtro.</div>
+      )}
+
+      {result && rows.length > 0 && (
+        <div className="table-scroll">
+          <table>
+            <thead>
+              <tr>{result.columns.map(c => <th key={c}>{columnLabel(c)}</th>)}</tr>
+            </thead>
+            <tbody>
+              {rows.map((row, index) => (
+                <tr key={index}>
+                  {result.columns.map(c => (
+                    <td key={c} className={isNum(row[c]) ? 'numeric' : ''}>{row[c] ?? '—'}</td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {query && (
+        <p className="subtle analytics-status">
+          Consulta {query} completada · {format(rows.length)} filas.
+        </p>
+      )}
+    </div>
+  );
 }
 function GeneralServicePage({page,onSelect,selectedFireId,onFireChange}) {
  const r=useResource(()=>page==='risk'?(selectedFireId?api.risk(selectedFireId):Promise.resolve({data:null,source:'configured'})):({cities:api.cities,weather:api.weather,analytics:api.analytics}[page])(),[page,selectedFireId]);
